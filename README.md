@@ -61,3 +61,13 @@ Run the code
 [4] Hardware-Friendly Operations: Refined the quantization logic by replacing FP32 multiplications with bit-shifting operations. This significantly optimizes the model for deployment on hardware with limited floating-point support.
 
 [5] Automated Optimization Search: Developed and integrated a bi-directional greedy search algorithm (/skeleton/bin/bidirectional_greedy.py). This tool automates the process of finding the optimal quantization multipliers for each layer to maximize mAP.
+
++++ Updated (26.03.22)
+
+**NOTE**: To store weights, biases, and scales, use the -save_params flag when executing ./darknet.
+
+[1] Modified forward_convolutional_layer_q() (src/yolov2_forward_network_quantized.c) to print two input/output feature map elements per line.
+
+[2] Modified save_quantized_model() (src/yolov2_forward_network_quantized.c) to print two weights per line, and four base-2 log scale values per line.
+
+

@@ -1,4 +1,6 @@
+#include <math.h>
 #include "additionally.h"    // some definitions from: im2col.h, blas.h, list.h, utils.h, activations.h, tree.h, layer.h, network.h
+
 // softmax_layer.h, reorg_layer.h, route_layer.h, region_layer.h, maxpool_layer.h, convolutional_layer.h
 
 #define GEMMCONV
@@ -10,6 +12,24 @@
 #define MAX_VAL_16      32767       // 15-bit (1-bit sign)
 #define MAX_VAL_32      2147483647  // 31-bit (1-bit sign)
 #define MAX_VAL_UINT_8  255
+
+// Hardware Buffer Bitwidths
+#define HW_INOUT_BUFFER_BITWIDTH 32
+#define HW_WEIGHT_BUFFER_BITWIDTH 72
+#define HW_BIAS_BUFFER_BITWIDTH   32
+#define HW_SCALE_BUFFER_BITWIDTH  32
+
+// Individual Value Bitwidths
+#define HW_INOUT_VALUE_BITWIDTH 8
+#define WEIGHT_VALUE_BITWIDTH 8
+#define BIAS_VALUE_BITWIDTH   16
+#define SCALE_VALUE_BITWIDTH  4
+
+// Number of Elements Per Line (Calculated)
+#define INOUT_PER_LINE (HW_BIAS_BUFFER_BITWIDTH / HW_INOUT_VALUE_BITWIDTH)
+#define WEIGHTS_PER_LINE (HW_WEIGHT_BUFFER_BITWIDTH / WEIGHT_VALUE_BITWIDTH)
+#define BIASES_PER_LINE  (HW_BIAS_BUFFER_BITWIDTH / BIAS_VALUE_BITWIDTH)
+#define SCALES_PER_LINE  (HW_SCALE_BUFFER_BITWIDTH / SCALE_VALUE_BITWIDTH)
 
 int const run_single_image_test = 1;
 
@@ -145,21 +165,51 @@ void forward_convolutional_layer_q(network net, layer l, network_state state)
     
     // Write data for the HW verification
     //{{{
+    // if (run_single_image_test) {
+    //     // Input Feature Map (IFM)
+    //     char file_input_femap[100];
+    //     snprintf(file_input_femap, sizeof(file_input_femap), "../bin/log_feamap/CONV%02d_input.hex", state.index);
+    //     FILE* fp = fopen(file_input_femap, "w");
+    
+    //     // Data Format: [Channel, Width, Height]        
+    //     for (int chn = 0; chn < l.c; chn++) {               // IFM: Channel/index of an feature map
+    //         for (int idx = 0; idx < l.h * l.w; idx++) {     // IFM: Pixel index in ONE feature map            
+    //             int i = chn * l.h * l.w + idx;              // IFM: Pixel index 
+    //             uint8_t pixel = state.input_uint8[i];
+    //             fprintf(fp, "%02x\n", pixel);
+    //         }
+    //     }
+    //     if (fp) fclose(fp);
+    // }
     if (run_single_image_test) {
-        // Input Feature Map (IFM)
         char file_input_femap[100];
         snprintf(file_input_femap, sizeof(file_input_femap), "../bin/log_feamap/CONV%02d_input.hex", state.index);
         FILE* fp = fopen(file_input_femap, "w");
     
-        // Data Format: [Channel, Width, Height]        
-        for (int chn = 0; chn < l.c; chn++) {               // IFM: Channel/index of an feature map
-            for (int idx = 0; idx < l.h * l.w; idx++) {     // IFM: Pixel index in ONE feature map            
-                int i = chn * l.h * l.w + idx;              // IFM: Pixel index 
-                uint8_t pixel = state.input_uint8[i];
-                fprintf(fp, "%02x\n", pixel);
+        if (fp) {
+            int count = 0;
+            
+            // Data Format: [Channel, Width, Height]        
+            for (int chn = 0; chn < l.c; chn++) {               
+                for (int idx = 0; idx < l.h * l.w; idx++) {                 
+                    int i = chn * l.h * l.w + idx;               
+                    uint8_t pixel = state.input_uint8[i];
+                    
+                    fprintf(fp, "%02x", pixel); 
+                    count++;
+                
+                    if (count % INOUT_PER_LINE == 0) {
+                        fprintf(fp, "\n"); 
+                    }
+                }
             }
+            
+            if (count % INOUT_PER_LINE != 0) {
+                fprintf(fp, "\n");
+            }
+            
+            fclose(fp);
         }
-        if (fp) fclose(fp);
     }
     //}}}
 
@@ -206,7 +256,6 @@ void forward_convolutional_layer_q(network net, layer l, network_state state)
     // Write data for the HW verification
     //{{{
     if (run_single_image_test) {
-        // Output Feature Map (OFM)
         int z;
         int next_input_quant_multiplier = 1;
         for (z = state.index + 1; z < net.n; ++z) {
@@ -218,16 +267,31 @@ void forward_convolutional_layer_q(network net, layer l, network_state state)
         char file_output_femap[100];
         snprintf(file_output_femap, sizeof(file_output_femap), "../bin/log_feamap/CONV%02d_output.hex", state.index);
         FILE* fp = fopen(file_output_femap, "w");    
-        // Data Format: [Channel, Width, Height]
-        for (int chn = 0; chn < l.n; chn++) {           // OFM: Channel/index of an feature map
-            for (int idx = 0; idx < out_size; idx++) {  // OFM: Pixel index in ONE feature map            
-                int i = chn * out_size + idx;           // OFM: Pixel index
-                int16_t src = l.output[i] * next_input_quant_multiplier;
-                uint8_t pixel = max_abs(src, MAX_VAL_UINT_8);
-                fprintf(fp, "%02x\n", pixel);
+        
+        if (fp) {
+            int count = 0; 
+
+            for (int chn = 0; chn < l.n; chn++) {           
+                for (int idx = 0; idx < out_size; idx++) {              
+                    int i = chn * out_size + idx;           
+                    int16_t src = l.output[i] * next_input_quant_multiplier;
+                    uint8_t pixel = max_abs(src, MAX_VAL_UINT_8);
+                
+                    fprintf(fp, "%02x", pixel);
+                    count++;
+                    
+                    if (count % INOUT_PER_LINE == 0) {
+                        fprintf(fp, "\n");
+                    }
+                }
             }
+            
+            if (count % INOUT_PER_LINE != 0) {
+                fprintf(fp, "\n");
+            }
+            
+            fclose(fp);
         }
-        if (fp) fclose(fp);
     }
     //}}}
     free(output_q);
@@ -356,55 +420,77 @@ void do_quantization(network net) {
 }
 
 void save_quantized_model(network net) {
-    int j;
-    for (j = 0; j < net.n; ++j) {
+    for (int j = 0; j < net.n; ++j) {
         layer* l = &net.layers[j];
-        if (l->type == CONVOLUTIONAL) {            
-            size_t filter_size = l->size * l->size * l->c;            
+        
+        // Skip non-convolutional layers
+        if (l->type != CONVOLUTIONAL) continue; 
             
-            printf(" Saving quantized weights, bias, and scale for CONV%02d \n", j);
+        size_t filter_size = l->size * l->size * l->c;            
+        printf(" Saving quantized weights, bias, and scale for CONV%02d \n", j);
 
-            char weightfile [100];            
-            char biasfile   [100];
-            char scalefile  [100];
-
-            sprintf(weightfile  , "../bin//log_param/CONV%02d_param_weight.hex", j);
-            sprintf(biasfile    , "../bin//log_param/CONV%02d_param_biases.hex", j);
-            sprintf(scalefile   , "../bin//log_param/CONV%02d_param_scales.hex", j);
-            FILE* fp_w = fopen(weightfile, "w");
-            FILE* fp_b = fopen(biasfile, "w");
-            FILE* fp_s = fopen(scalefile, "w");
-            
-            int f;            
-            for (f = 0; f < l->n; f++) {    // Out_channel
-                // Weights
-                for (int i = 0; i < filter_size; ++i) {     // Filter size
-                    int w_index = f * filter_size + i;
-                    fprintf(fp_w, "%02x\n", (uint8_t) l->weights_int8[w_index]);
-                }                
-    
-                // Biases
-
-                fprintf(fp_b, "%04x\n", (uint16_t) l->biases_quant[f]);
- 
-                
-                // Dequantization or Scaling                
-                // Find the input quantization factor for the next CONV layer
-                int next_input_quant_multiplier = 1;
-                for (int z = l->index+ 1; z < net.n; ++z) {
-                    if (net.layers[z].type == CONVOLUTIONAL) {
-                        next_input_quant_multiplier = net.layers[z].input_quant_multiplier;
-                        break;
-                    }
-                }                
-
-                int scale = (l->input_quant_multiplier * l->weights_quant_multiplier) / next_input_quant_multiplier;
-                fprintf(fp_s, "%04x\n", (uint16_t) scale);
-            }
-
-            fclose(fp_w);
-            fclose(fp_b);
-            fclose(fp_s);
+        char weightfile[256], biasfile[256], scalefile[256];
+        snprintf(weightfile, sizeof(weightfile), "../bin/log_param/CONV%02d_param_weight.hex", j);
+        snprintf(biasfile,   sizeof(biasfile),   "../bin/log_param/CONV%02d_param_biases.hex", j);
+        snprintf(scalefile,  sizeof(scalefile),  "../bin/log_param/CONV%02d_param_scales.hex", j);
+        
+        FILE* fp_w = fopen(weightfile, "w");
+        FILE* fp_b = fopen(biasfile, "w");
+        FILE* fp_s = fopen(scalefile, "w");
+        
+        if (!fp_w || !fp_b || !fp_s) {
+            printf(" Error: Cannot open files for CONV%02d\n", j);
+            if (fp_w) fclose(fp_w);
+            if (fp_b) fclose(fp_b);
+            if (fp_s) fclose(fp_s);
+            continue;
         }
+
+        int w_count = 0; 
+        int s_count = 0; 
+        int b_count = 0; 
+
+        // Calculate shift value once per layer to avoid redundant calculations
+        int next_input_quant_multiplier = 1;
+        for (int z = l->index + 1; z < net.n; ++z) {
+            if (net.layers[z].type == CONVOLUTIONAL) {
+                next_input_quant_multiplier = net.layers[z].input_quant_multiplier;
+                break;
+            }
+        }                
+        int log2_in      = (int)log2(l->input_quant_multiplier);
+        int log2_w       = (int)log2(l->weights_quant_multiplier);
+        int log2_next_in = (int)log2(next_input_quant_multiplier);
+        int shift_value  = log2_in + log2_w - log2_next_in;
+
+        // Iterate through output channels
+        for (int f = 0; f < l->n; f++) {   
+            
+            // 1. Save Weights
+            for (int i = 0; i < filter_size; ++i) {     
+                fprintf(fp_w, "%02x", (uint8_t) l->weights_int8[f * filter_size + i]);
+                w_count++;
+                if (w_count % WEIGHTS_PER_LINE == 0) fprintf(fp_w, "\n");
+            }                
+
+            // 2. Save Biases
+            fprintf(fp_b, "%04x", (uint16_t) l->biases_quant[f]);
+            b_count++;
+            if (b_count % BIASES_PER_LINE == 0) fprintf(fp_b, "\n");
+            
+            // 3. Save Scales/Shifts
+            fprintf(fp_s, "%1x", shift_value & 0xF); 
+            s_count++;
+            if (s_count % SCALES_PER_LINE == 0) fprintf(fp_s, "\n");
+        }
+        
+        // Add newline at the end if the last line is not full
+        if (w_count % WEIGHTS_PER_LINE != 0) fprintf(fp_w, "\n");
+        if (b_count % BIASES_PER_LINE != 0) fprintf(fp_b, "\n");
+        if (s_count % SCALES_PER_LINE != 0) fprintf(fp_s, "\n");
+
+        fclose(fp_w);
+        fclose(fp_b);
+        fclose(fp_s);
     }
 }
