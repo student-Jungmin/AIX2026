@@ -26,7 +26,7 @@
 #define SCALE_VALUE_BITWIDTH  4
 
 // Number of Elements Per Line (Calculated)
-#define INOUT_PER_LINE (HW_BIAS_BUFFER_BITWIDTH / HW_INOUT_VALUE_BITWIDTH)
+#define INOUT_PER_LINE (HW_INOUT_BUFFER_BITWIDTH / HW_INOUT_VALUE_BITWIDTH)
 #define WEIGHTS_PER_LINE (HW_WEIGHT_BUFFER_BITWIDTH / WEIGHT_VALUE_BITWIDTH)
 #define BIASES_PER_LINE  (HW_BIAS_BUFFER_BITWIDTH / BIAS_VALUE_BITWIDTH)
 #define SCALES_PER_LINE  (HW_SCALE_BUFFER_BITWIDTH / SCALE_VALUE_BITWIDTH)
@@ -190,10 +190,28 @@ void forward_convolutional_layer_q(network net, layer l, network_state state)
             int count = 0;
             
             // Data Format: [Channel, Width, Height]        
-            for (int chn = 0; chn < l.c; chn++) {               
-                for (int idx = 0; idx < l.h * l.w; idx++) {                 
-                    int i = chn * l.h * l.w + idx;               
-                    uint8_t pixel = state.input_uint8[i];
+            // for (int chn = 0; chn < l.c; chn++) {               
+            //     for (int idx = 0; idx < l.h * l.w; idx++) {                 
+            //         int i = chn * l.h * l.w + idx;               
+            //         uint8_t pixel = state.input_uint8[i];
+                    
+            //         fprintf(fp, "%02x", pixel); 
+            //         count++;
+                
+            //         if (count % INOUT_PER_LINE == 0) {
+            //             fprintf(fp, "\n"); 
+            //         }
+            //     }
+            // }
+
+            int c = (l.c + 3) & ~3; 
+            int spatial_size = l.h * l.w;
+
+            for (int idx = 0; idx < spatial_size; idx++) {
+                for (int chn = c-1; chn >= 0; chn--) {              
+                    int i = chn * spatial_size + idx; 
+                    
+                    uint8_t pixel = (chn < l.c) ? state.input_uint8[i] : 0;
                     
                     fprintf(fp, "%02x", pixel); 
                     count++;
@@ -271,8 +289,8 @@ void forward_convolutional_layer_q(network net, layer l, network_state state)
         if (fp) {
             int count = 0; 
 
-            for (int chn = 0; chn < l.n; chn++) {           
-                for (int idx = 0; idx < out_size; idx++) {              
+            for (int idx = 0; idx < out_size; idx++) {           
+                for (int chn = l.n-1; chn >= 0; chn--) {              
                     int i = chn * out_size + idx;           
                     int16_t src = l.output[i] * next_input_quant_multiplier;
                     uint8_t pixel = max_abs(src, MAX_VAL_UINT_8);
@@ -451,8 +469,8 @@ void save_quantized_model(network net) {
         int b_count = 0; 
 
         // Calculate shift value once per layer to avoid redundant calculations
-        int next_input_quant_multiplier = 1;
-        for (int z = l->index + 1; z < net.n; ++z) {
+        float next_input_quant_multiplier = 1;
+        for (int z = j + 1; z < net.n; ++z) {
             if (net.layers[z].type == CONVOLUTIONAL) {
                 next_input_quant_multiplier = net.layers[z].input_quant_multiplier;
                 break;
@@ -463,18 +481,20 @@ void save_quantized_model(network net) {
         int log2_next_in = (int)log2(next_input_quant_multiplier);
         int shift_value  = log2_in + log2_w - log2_next_in;
 
+        printf("CONV%2d: I: %f W: %f N: %f LI: %d LW: %d LN: %d S: %d\n", j, l->input_quant_multiplier, l->weights_quant_multiplier, next_input_quant_multiplier, log2_in, log2_w, log2_next_in, shift_value);
+
         // Iterate through output channels
         for (int f = 0; f < l->n; f++) {   
             
             // 1. Save Weights
             for (int i = 0; i < filter_size; ++i) {     
-                fprintf(fp_w, "%02x", (uint8_t) l->weights_int8[f * filter_size + i]);
+                fprintf(fp_w, "%02x", l->weights_int8[f * filter_size + i] & 0xFF);
                 w_count++;
                 if (w_count % WEIGHTS_PER_LINE == 0) fprintf(fp_w, "\n");
             }                
 
             // 2. Save Biases
-            fprintf(fp_b, "%04x", (uint16_t) l->biases_quant[f]);
+            fprintf(fp_b, "%04x", l->biases_quant[f] & 0xFFFF);
             b_count++;
             if (b_count % BIASES_PER_LINE == 0) fprintf(fp_b, "\n");
             
