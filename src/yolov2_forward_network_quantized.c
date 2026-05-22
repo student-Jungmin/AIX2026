@@ -116,13 +116,15 @@ void gemm_nn_int8_int32(int M, int N, int K, int8_t ALPHA,
     int32_t *C, int ldc)
 {
     int32_t *c_tmp = calloc(N, sizeof(int32_t));
+
     int i, j, k;
     for (i = 0; i < M; ++i) {
         for (k = 0; k < K; ++k) {
             register int16_t A_PART = ALPHA*A[i*lda + k];
             //#pragma simd parallel for
             for (j = 0; j < N; ++j) {
-                c_tmp[j] += A_PART*B[k*ldb + j];
+                // FIX POINT:  c_tmp[j] += A_PART*(B[k*ldb + j]);
+                c_tmp[j] += A_PART*((uint8_t)B[k*ldb + j]);
             }
         }
         for (j = 0; j < N; ++j) {
